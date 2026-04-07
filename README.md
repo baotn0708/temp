@@ -1,5 +1,4 @@
-# Regime-aware fuzzy hybrid research project
-
+## Everything is going wrong. It's all falling apart.
 This project is a **clean rebuild** of the earlier hybrid idea with three goals:
 
 1. remove the split/integrity issues,
