@@ -1,35 +1,4 @@
 ## Everything is going wrong. It's all falling apart.
-This project is a **clean rebuild** of the earlier hybrid idea with three goals:
-
-1. remove the split/integrity issues,
-2. make benchmarking materially harder to game,
-3. keep the hybrid design principled instead of doing a post-hoc residual correction.
-
-## What changed versus the earlier repo
-
-### 1) No temporal target-overlap leakage at split boundaries
-The benchmark now uses a **purged walk-forward split** with an explicit `gap` (default = `horizon`) between:
-- train and validation,
-- validation and test.
-
-That avoids the common fixed-horizon overlap bug where training labels bleed into the next block.
-
-### 2) Walk-forward instead of one fixed split
-The benchmark runs multiple chronological folds. Each fold uses:
-- rolling / truncated training history via `max_train_size`,
-- validation block for tuning,
-- untouched future test block for final evaluation.
-
-### 3) Fairer model selection
-Hyperparameters are tuned on validation only.
-After tuning, the selected model is **refit on train + validation** and evaluated once on the untouched test block.
-
-### 4) Same target normalization and auxiliary objective for all neural models
-Both neural models use:
-- volatility-normalized return target,
-- auxiliary direction loss.
-
-That removes the earlier asymmetry where the hybrid had extra help but LSTM did not.
 
 ## Model design
 
