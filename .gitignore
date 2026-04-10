@@ -6,3 +6,6 @@
 !functional_api/**
 !examples/
 !examples/**
+!AMZN.csv
+!JPM.csv
+!TSLA.csv
