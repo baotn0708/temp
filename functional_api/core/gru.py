@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from .hybrid_core import FEATURE_COLS, DataConfig, FeatureScaler, TrainConfig, compute_features, save_json, set_seed
+from .sequence_common import FEATURE_COLS, DataConfig, FeatureScaler, TrainConfig, compute_features, save_json, set_seed
 
 
 DEFAULT_DATASETS: Dict[str, str] = {

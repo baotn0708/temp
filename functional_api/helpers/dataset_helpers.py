@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from functional_api.internal.gru_only_core import resolve_datasets
+from functional_api.core.gru import resolve_datasets
 
 from functional_api.types import DatasetSpec
 

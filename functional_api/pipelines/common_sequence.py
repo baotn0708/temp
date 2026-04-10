@@ -14,8 +14,8 @@ from functional_api.helpers import (
     resolve_dataset_specs,
 )
 from functional_api.types import ArtifactPolicy, BenchmarkPipelineResult, TrainDatasetResult, TrainPipelineResult
-from functional_api.internal.gru_only_core import RatioSplitConfig, gather_split_arrays, load_asset_dataset
-from functional_api.internal.hybrid_core import TrainConfig
+from functional_api.core.gru import RatioSplitConfig, gather_split_arrays, load_asset_dataset
+from functional_api.core.sequence_common import TrainConfig
 
 
 @dataclass

@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from .gru_only_core import (
+from .gru import (
     DEFAULT_DATASETS,
     RatioSplitConfig,
     SplitArrays,
@@ -24,7 +24,7 @@ from .gru_only_core import (
     _metrics_from_price_arrays,
     resolve_datasets,
 )
-from .hybrid_core import FeatureScaler, TrainConfig, save_json, set_seed, summarize_windows
+from .sequence_common import FeatureScaler, TrainConfig, save_json, set_seed, summarize_windows
 
 
 @dataclass

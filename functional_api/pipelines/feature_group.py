@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -10,9 +10,9 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import StandardScaler
 
-from functional_api.internal.feature_group_anfis_703_core import MODEL_NAME, FeatureGroupAnfis703Config, flatten_price_metrics, run_feature_group_anfis_703
-from functional_api.internal.gru_only_core import RatioSplitConfig, make_purged_ratio_split
-from functional_api.internal.run_feature_group_anfis_clean import (
+from functional_api.core.feature_group import MODEL_NAME, FeatureGroupAnfis703Config, flatten_price_metrics, run_feature_group_anfis_703
+from functional_api.core.gru import RatioSplitConfig, make_purged_ratio_split
+from functional_api.core.feature_group_model import (
     PRICE_NAMES,
     TARGET_NAMES,
     PreparedData,
@@ -40,46 +40,8 @@ from functional_api.helpers import (
     price_metrics_to_rows,
     resolve_dataset_specs,
 )
-from functional_api.types import ArtifactPolicy, BenchmarkPipelineResult, BenchmarkRequestBase, TrainDatasetResult, TrainPipelineResult, TrainRequestBase
-
-
-@dataclass
-class FeatureGroupTrainRequest(TrainRequestBase):
-    split_ratio: str = "7/3"
-    gap: int = 1
-    look_back: int = 60
-    n_mfs: int = 2
-    epochs: int = 150
-    batch_size: int = 32
-    seed: int = 7
-    lstm_units: int = 32
-    dropout: float = 0.2
-    learning_rate: float = 1e-3
-    include_exog: bool = False
-    max_rows: int | None = None
-    verbose: int = 0
-    artifact_policy: ArtifactPolicy = field(
-        default_factory=lambda: ArtifactPolicy(output_dir="./functional_api_outputs/feature_group_train")
-    )
-
-
-@dataclass
-class FeatureGroupBenchmarkRequest(BenchmarkRequestBase):
-    split_ratio: str = "7/3"
-    gap: int = 1
-    look_back: int = 60
-    n_mfs: int = 2
-    epochs: int = 150
-    batch_size: int = 32
-    lstm_units: int = 32
-    dropout: float = 0.2
-    learning_rate: float = 1e-3
-    include_exog: bool = False
-    max_rows: int | None = None
-    verbose: int = 0
-    artifact_policy: ArtifactPolicy = field(
-        default_factory=lambda: ArtifactPolicy(output_dir="./functional_api_outputs/feature_group_benchmark")
-    )
+from functional_api.requests import FeatureGroupBenchmarkRequest, FeatureGroupTrainRequest
+from functional_api.types import BenchmarkPipelineResult, TrainDatasetResult, TrainPipelineResult
 
 
 @dataclass

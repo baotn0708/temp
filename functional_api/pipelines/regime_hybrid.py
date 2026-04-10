@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 os.environ.setdefault("KERAS_BACKEND", "torch")
@@ -15,15 +15,15 @@ import keras
 import pandas as pd
 import torch
 
-from functional_api.internal.gru_only_core import RatioSplitConfig, make_purged_ratio_split
-from functional_api.internal.regime_gated_anfis_price_benchmark import (
+from functional_api.core.gru import RatioSplitConfig, make_purged_ratio_split
+from functional_api.core.regime_hybrid_benchmark import (
     aggregate_numeric_rows as native_aggregate_numeric_rows,
     build_window_store,
     make_purged_walk_forward_splits,
     prepare_from_indices,
     run_fold_seed_benchmark,
 )
-from functional_api.internal.run_regime_gated_anfis_hybrid import (
+from functional_api.core.regime_hybrid import (
     configure_runtime,
     engineer_features,
     load_market_dataframe,
@@ -45,58 +45,8 @@ from functional_api.helpers import (
     price_metrics_to_rows,
     resolve_dataset_specs,
 )
-from functional_api.types import ArtifactPolicy, BenchmarkPipelineResult, BenchmarkRequestBase, TrainDatasetResult, TrainPipelineResult, TrainRequestBase
-
-
-@dataclass
-class RegimeHybridTrainRequest(TrainRequestBase):
-    output_dir: str = "./functional_api_outputs/regime_hybrid_train"
-    look_back: int = 60
-    train_ratio: float = 0.70
-    val_ratio: float = 0.15
-    n_mfs: int = 2
-    epochs: int = 120
-    batch_size: int = 32
-    runs: int = 1
-    seed: int = 42
-    temporal_units: int = 48
-    conv_filters: int = 48
-    dropout: float = 0.15
-    learning_rate: float = 1e-3
-    component_loss_weight: float = 0.25
-    include_exog: bool = False
-    max_rows: int | None = None
-    verbose: int = 0
-    artifact_policy: ArtifactPolicy = field(
-        default_factory=lambda: ArtifactPolicy(output_dir="./functional_api_outputs/regime_hybrid_train")
-    )
-
-
-@dataclass
-class RegimeHybridBenchmarkRequest(BenchmarkRequestBase):
-    output_dir: str = "./functional_api_outputs/regime_hybrid_benchmark"
-    look_back: int = 60
-    horizon: int = 1
-    n_splits: int = 3
-    gap: int = -1
-    val_frac: float = 0.10
-    test_frac: float = 0.10
-    min_train_frac: float = 0.40
-    max_train_size: int = 768
-    n_mfs: int = 2
-    epochs: int = 120
-    batch_size: int = 32
-    temporal_units: int = 48
-    conv_filters: int = 48
-    dropout: float = 0.15
-    learning_rate: float = 1e-3
-    component_loss_weight: float = 0.25
-    include_exog: bool = False
-    max_rows: int | None = None
-    verbose: int = 0
-    artifact_policy: ArtifactPolicy = field(
-        default_factory=lambda: ArtifactPolicy(output_dir="./functional_api_outputs/regime_hybrid_benchmark")
-    )
+from functional_api.requests import RegimeHybridBenchmarkRequest, RegimeHybridTrainRequest
+from functional_api.types import BenchmarkPipelineResult, TrainDatasetResult, TrainPipelineResult
 
 
 @dataclass
@@ -344,7 +294,7 @@ class RegimeHybridPipelineAdapter:
             cmd = [
                 sys.executable,
                 "-m",
-                "functional_api.internal.regime_gated_anfis_price_benchmark",
+                "functional_api.core.regime_hybrid_benchmark",
                 "--output-dir",
                 str(output_root),
                 "--look-back",

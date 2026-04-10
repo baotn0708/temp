@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-from functional_api.internal.anfis_only_core import (
+from functional_api.core.anfis import (
     ANFISConfig,
     benchmark_single_dataset,
     fit_and_eval_anfis,
@@ -19,47 +17,7 @@ from functional_api.pipelines.common_sequence import (
     run_sequence_native_benchmark,
     run_sequence_native_train,
 )
-from functional_api.types import ArtifactPolicy, BenchmarkRequestBase, TrainRequestBase
-
-
-@dataclass
-class ANFISTrainRequest(TrainRequestBase):
-    split_ratio: str = "7/2/1"
-    seq_len: int = 60
-    horizon: int = 1
-    gap: int = -1
-    max_epochs: int = 30
-    patience: int = 5
-    batch_size: int = 256
-    tuning_seed: int = 123
-    train_seed: int = 7
-    fast: bool = False
-    n_rules: int | None = None
-    lr: float = 1e-3
-    artifact_policy: ArtifactPolicy = field(
-        default_factory=lambda: ArtifactPolicy(output_dir="./functional_api_outputs/anfis_train")
-    )
-
-
-@dataclass
-class ANFISBenchmarkRequest(BenchmarkRequestBase):
-    split_ratio: str = "7/2/1"
-    seq_len: int = 60
-    horizon: int = 1
-    gap: int = -1
-    max_epochs: int = 30
-    patience: int = 5
-    batch_size: int = 256
-    tuning_seed: int = 123
-    fast: bool = False
-    n_rules: int | None = None
-    lr: float = 1e-3
-    artifact_policy: ArtifactPolicy = field(
-        default_factory=lambda: ArtifactPolicy(output_dir="./functional_api_outputs/anfis_benchmark")
-    )
-
-    def fixed_config_kwargs(self) -> dict[str, object]:
-        return {"fixed_anfis_cfg": _build_fixed_config(self)}
+from functional_api.requests import ANFISBenchmarkRequest, ANFISTrainRequest
 
 
 def _build_fixed_config(request: ANFISTrainRequest | ANFISBenchmarkRequest) -> ANFISConfig | None:

@@ -5,7 +5,7 @@ Repo này đã được rút gọn về một đường chạy chính duy nhất
 ## Cấu trúc
 
 - `functional_api/`: public API để train và benchmark
-- `functional_api/internal/`: phần lõi được nội hóa từ repo cũ, không còn dùng entrypoint cũ ở root
+- `functional_api/core/`: phần lõi private phía sau public API
 - `examples/`: script mẫu để bấm `Run` trong editor hoặc chạy trực tiếp bằng Python
 
 ## Cài môi trường
@@ -47,6 +47,15 @@ result = benchmark_fair(
 ## Script mẫu
 
 ```bash
+python examples/run_gru_benchmark.py
 python examples/run_gru_train.py
+python examples/run_lstm_benchmark.py
+python examples/run_lstm_train.py
+python examples/run_anfis_benchmark.py
+python examples/run_anfis_train.py
+python examples/run_feature_group_benchmark.py
+python examples/run_feature_group_train.py
+python examples/run_regime_hybrid_benchmark.py
+python examples/run_regime_hybrid_train.py
 python examples/run_fair_benchmark.py
 ```
