@@ -59,3 +59,57 @@ python examples/run_regime_hybrid_benchmark.py
 python examples/run_regime_hybrid_train.py
 python examples/run_fair_benchmark.py
 ```
+
+## Đổi dữ liệu đầu vào
+
+Các file trong `examples/` là runner mỏng. Muốn chạy với dữ liệu khác, bạn chỉ cần sửa `datasets=[...]` hoặc `files=[...]` trong file runner tương ứng.
+
+Ví dụ trong một runner train:
+
+```python
+request = GRUTrainRequest(
+    datasets=["AMZN"],
+    ...
+)
+```
+
+Bạn có thể đổi sang nhiều dataset theo tên:
+
+```python
+request = GRUTrainRequest(
+    datasets=["AMZN", "JPM", "TSLA"],
+    ...
+)
+```
+
+Hoặc chỉ định trực tiếp file CSV:
+
+```python
+request = GRUTrainRequest(
+    files=[
+        "/absolute/path/to/AMZN.csv",
+        "/absolute/path/to/JPM.csv",
+    ],
+    ...
+)
+```
+
+Các runner thường cần sửa:
+
+- `examples/run_gru_train.py`
+- `examples/run_gru_benchmark.py`
+- `examples/run_lstm_train.py`
+- `examples/run_lstm_benchmark.py`
+- `examples/run_anfis_train.py`
+- `examples/run_anfis_benchmark.py`
+- `examples/run_feature_group_train.py`
+- `examples/run_feature_group_benchmark.py`
+- `examples/run_regime_hybrid_train.py`
+- `examples/run_regime_hybrid_benchmark.py`
+- `examples/run_fair_benchmark.py`
+
+Khuyến nghị:
+
+- Dùng `files=[...]` nếu bạn muốn chỉ rõ chính xác CSV nào sẽ được chạy.
+- Dùng `datasets=[...]` nếu bạn đang theo naming convention sẵn có của repo.
+- Mỗi file CSV hiện được xử lý như một dataset riêng: train riêng, benchmark riêng, rồi mới tổng hợp bảng kết quả.
