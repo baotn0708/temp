@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-from gru_only_core import resolve_datasets
-from run_regime_gated_anfis_hybrid import (
+from .gru_only_core import resolve_datasets
+from .run_regime_gated_anfis_hybrid import (
     PRICE_NAMES,
     PreparedData,
     build_anfis_only_model,

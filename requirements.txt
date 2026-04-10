@@ -1,6 +1,1 @@
-numpy<2
-pandas
-scikit-learn
-torch
-tensorflow
-tabulate
+-r functional_api/requirements.txt

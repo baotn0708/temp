@@ -9,106 +9,88 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
-from gru_only_core import (
-    DEFAULT_DATASETS,
+from .gru_only_core import (
+    GRUDataset,
     RatioSplitConfig,
     SplitArrays,
     TARGET_DIM,
     TARGET_KEYS,
+    _metrics_from_price_arrays,
     _scaled_predictions,
     gather_split_arrays,
     load_asset_dataset,
+    metrics_bundle_to_rows,
     reconstruct_prices_from_logreturns,
-    _metrics_from_price_arrays,
     resolve_datasets,
 )
-from hybrid_core import FeatureScaler, TrainConfig, save_json, set_seed, summarize_windows
+from .hybrid_core import FeatureScaler, TrainConfig, save_json, set_seed
 
 
 @dataclass
-class ANFISConfig:
-    n_rules: int = 6
+class LSTMConfig:
+    hidden_dim: int = 32
+    num_layers: int = 1
+    dropout: float = 0.10
     lr: float = 1e-3
 
 
-class ANFISDataset(Dataset):
-    def __init__(self, X_summary: np.ndarray, y_z: np.ndarray, scale: np.ndarray) -> None:
-        self.X = torch.tensor(X_summary, dtype=torch.float32)
-        self.y = torch.tensor(y_z, dtype=torch.float32)
-        self.scale = torch.tensor(scale, dtype=torch.float32)
-
-    def __len__(self) -> int:
-        return len(self.y)
-
-    def __getitem__(self, idx: int):
-        return self.X[idx], self.y[idx], self.scale[idx]
-
-
-class ANFISMultiOutputRegressor(nn.Module):
+class LSTMMultiOutputRegressor(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        n_rules: int = 6,
+        hidden_dim: int = 32,
+        num_layers: int = 1,
+        dropout: float = 0.10,
         output_dim: int = TARGET_DIM,
     ) -> None:
         super().__init__()
-        self.input_norm = nn.LayerNorm(input_dim)
-        self.centers = nn.Parameter(torch.randn(n_rules, input_dim) * 0.15)
-        self.log_scales = nn.Parameter(torch.zeros(n_rules, input_dim))
-        self.rule_bias = nn.Parameter(torch.zeros(n_rules))
-        self.consequent_weight = nn.Parameter(torch.randn(n_rules, input_dim, output_dim) * 0.05)
-        self.consequent_bias = nn.Parameter(torch.zeros(n_rules, output_dim))
-        self.direction_head = nn.Linear(input_dim, output_dim)
-        self.temperature = nn.Parameter(torch.tensor(1.0))
+        lstm_dropout = dropout if num_layers > 1 else 0.0
+        self.lstm = nn.LSTM(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=lstm_dropout,
+        )
+        self.head = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim),
+        )
+        self.direction_head = nn.Linear(hidden_dim, output_dim)
 
-    def fuzzy_logits(self, x: torch.Tensor) -> torch.Tensor:
-        diff = x.unsqueeze(1) - self.centers.unsqueeze(0)
-        scales = F.softplus(self.log_scales).unsqueeze(0) + 1e-3
-        return -0.5 * ((diff / scales) ** 2).sum(dim=-1) + self.rule_bias
-
-    def forward(self, x_summary: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = self.input_norm(x_summary)
-        gate = F.softmax(self.fuzzy_logits(x) / (F.softplus(self.temperature) + 1e-3), dim=-1)
-        rule_outputs = torch.einsum("bd,rdo->bro", x, self.consequent_weight) + self.consequent_bias.unsqueeze(0)
-        pred = (gate.unsqueeze(-1) * rule_outputs).sum(dim=1)
-        direction_logit = self.direction_head(x)
-        return pred, direction_logit, gate
+    def forward(self, X_seq: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        out, _ = self.lstm(X_seq)
+        state = out[:, -1]
+        pred = self.head(state)
+        direction_logit = self.direction_head(state)
+        return pred, direction_logit
 
 
-def default_anfis_candidates() -> List[ANFISConfig]:
+def default_lstm_candidates() -> List[LSTMConfig]:
     return [
-        ANFISConfig(n_rules=4, lr=1e-3),
-        ANFISConfig(n_rules=6, lr=1e-3),
-        ANFISConfig(n_rules=8, lr=1e-3),
-        ANFISConfig(n_rules=6, lr=5e-4),
+        LSTMConfig(hidden_dim=24, num_layers=1, dropout=0.10, lr=1e-3),
+        LSTMConfig(hidden_dim=32, num_layers=1, dropout=0.10, lr=1e-3),
+        LSTMConfig(hidden_dim=48, num_layers=1, dropout=0.00, lr=1e-3),
+        LSTMConfig(hidden_dim=32, num_layers=2, dropout=0.10, lr=5e-4),
     ]
 
 
-def _make_model(input_dim: int, cfg: ANFISConfig) -> ANFISMultiOutputRegressor:
-    return ANFISMultiOutputRegressor(
+def _make_model(input_dim: int, cfg: LSTMConfig) -> LSTMMultiOutputRegressor:
+    return LSTMMultiOutputRegressor(
         input_dim=input_dim,
-        n_rules=cfg.n_rules,
+        hidden_dim=cfg.hidden_dim,
+        num_layers=cfg.num_layers,
+        dropout=cfg.dropout,
         output_dim=TARGET_DIM,
     )
 
 
-def _prepare_summary_views(split: SplitArrays):
-    scaler = FeatureScaler().fit(split.X_train_raw)
-    X_train = scaler.transform(split.X_train_raw)
-    X_val = scaler.transform(split.X_val_raw) if split.has_val else np.empty((0,), dtype=np.float32)
-    X_test = scaler.transform(split.X_test_raw)
-
-    S_train = summarize_windows(X_train)
-    S_val = summarize_windows(X_val) if split.has_val else np.empty((0, S_train.shape[1]), dtype=np.float32)
-    S_test = summarize_windows(X_test)
-    return scaler, S_train, S_val, S_test
-
-
-def predict_anfis(
-    model: ANFISMultiOutputRegressor,
-    dataset: ANFISDataset,
+def predict_lstm(
+    model: LSTMMultiOutputRegressor,
+    dataset: GRUDataset,
     batch_size: int = 256,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -116,8 +98,8 @@ def predict_anfis(
 
     preds, ys, scales = [], [], []
     with torch.no_grad():
-        for X_summary, y_z, scale in loader:
-            pred_z, _, _ = model(X_summary)
+        for X_seq, y_z, scale in loader:
+            pred_z, _ = model(X_seq)
             preds.append(pred_z.cpu().numpy())
             ys.append(y_z.cpu().numpy())
             scales.append(scale.cpu().numpy())
@@ -125,29 +107,29 @@ def predict_anfis(
     return np.concatenate(preds, axis=0), np.concatenate(ys, axis=0), np.concatenate(scales, axis=0)
 
 
-def evaluate_anfis(
-    model: ANFISMultiOutputRegressor,
-    dataset: ANFISDataset,
+def evaluate_lstm(
+    model: LSTMMultiOutputRegressor,
+    dataset: GRUDataset,
     current_ohlc: np.ndarray,
     actual_next_ohlc: np.ndarray,
     batch_size: int = 256,
 ) -> Dict[str, object]:
-    pred_z, y_z, scale = predict_anfis(model, dataset, batch_size=batch_size)
+    pred_z, y_z, scale = predict_lstm(model, dataset, batch_size=batch_size)
     _y_true, y_pred = _scaled_predictions(y_z, pred_z, scale)
     pred_next_ohlc = reconstruct_prices_from_logreturns(current_ohlc, y_pred)
     return _metrics_from_price_arrays(current_ohlc, actual_next_ohlc, pred_next_ohlc)
 
 
-def train_anfis_with_early_stopping(
-    model: ANFISMultiOutputRegressor,
-    train_ds: ANFISDataset,
-    val_ds: ANFISDataset,
+def train_lstm_with_early_stopping(
+    model: LSTMMultiOutputRegressor,
+    train_ds: GRUDataset,
+    val_ds: GRUDataset,
     val_current_ohlc: np.ndarray,
     val_next_ohlc: np.ndarray,
-    anfis_cfg: ANFISConfig,
+    lstm_cfg: LSTMConfig,
     train_cfg: TrainConfig,
-) -> Tuple[ANFISMultiOutputRegressor, Dict[str, object], int]:
-    optimizer = torch.optim.AdamW(model.parameters(), lr=anfis_cfg.lr, weight_decay=train_cfg.weight_decay)
+) -> Tuple[LSTMMultiOutputRegressor, Dict[str, object], int]:
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lstm_cfg.lr, weight_decay=train_cfg.weight_decay)
     train_loader = DataLoader(train_ds, batch_size=train_cfg.batch_size, shuffle=True)
 
     best_score = float("inf")
@@ -157,20 +139,18 @@ def train_anfis_with_early_stopping(
 
     for epoch in range(1, train_cfg.max_epochs + 1):
         model.train()
-        for X_summary, y_z, _scale in train_loader:
-            pred_z, direction_logit, gate = model(X_summary)
+        for X_seq, y_z, _scale in train_loader:
+            pred_z, direction_logit = model(X_seq)
             loss = F.smooth_l1_loss(pred_z, y_z)
             loss = loss + train_cfg.direction_loss_weight * F.binary_cross_entropy_with_logits(
                 direction_logit, (y_z > 0).float()
             )
-            entropy = -(gate * gate.clamp_min(1e-8).log()).sum(dim=-1).mean()
-            loss = loss - train_cfg.entropy_bonus * entropy
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-        metrics = evaluate_anfis(
+        metrics = evaluate_lstm(
             model,
             val_ds,
             current_ohlc=val_current_ohlc,
@@ -189,7 +169,7 @@ def train_anfis_with_early_stopping(
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    final_metrics = evaluate_anfis(
+    final_metrics = evaluate_lstm(
         model,
         val_ds,
         current_ohlc=val_current_ohlc,
@@ -199,26 +179,24 @@ def train_anfis_with_early_stopping(
     return model, final_metrics, best_epoch
 
 
-def fit_anfis_fixed_epochs(
-    model: ANFISMultiOutputRegressor,
-    train_ds: ANFISDataset,
-    anfis_cfg: ANFISConfig,
+def fit_lstm_fixed_epochs(
+    model: LSTMMultiOutputRegressor,
+    train_ds: GRUDataset,
+    lstm_cfg: LSTMConfig,
     train_cfg: TrainConfig,
     epochs: int,
-) -> ANFISMultiOutputRegressor:
-    optimizer = torch.optim.AdamW(model.parameters(), lr=anfis_cfg.lr, weight_decay=train_cfg.weight_decay)
+) -> LSTMMultiOutputRegressor:
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lstm_cfg.lr, weight_decay=train_cfg.weight_decay)
     train_loader = DataLoader(train_ds, batch_size=train_cfg.batch_size, shuffle=True)
 
     for _ in range(max(1, epochs)):
         model.train()
-        for X_summary, y_z, _scale in train_loader:
-            pred_z, direction_logit, gate = model(X_summary)
+        for X_seq, y_z, _scale in train_loader:
+            pred_z, direction_logit = model(X_seq)
             loss = F.smooth_l1_loss(pred_z, y_z)
             loss = loss + train_cfg.direction_loss_weight * F.binary_cross_entropy_with_logits(
                 direction_logit, (y_z > 0).float()
             )
-            entropy = -(gate * gate.clamp_min(1e-8).log()).sum(dim=-1).mean()
-            loss = loss - train_cfg.entropy_bonus * entropy
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -226,18 +204,21 @@ def fit_anfis_fixed_epochs(
     return model
 
 
-def tune_anfis_config(
+def tune_lstm_config(
     split: SplitArrays,
     train_cfg: TrainConfig,
-    candidates: Sequence[ANFISConfig],
+    candidates: Sequence[LSTMConfig],
     seed: int,
-) -> Tuple[ANFISConfig, int, Dict[str, object]]:
+) -> Tuple[LSTMConfig, int, Dict[str, object]]:
     if not split.has_val:
-        raise ValueError("Validation split is required to tune ANFIS configs.")
+        raise ValueError("Validation split is required to tune LSTM configs.")
 
-    _scaler, S_train, S_val, _S_test = _prepare_summary_views(split)
-    train_ds = ANFISDataset(S_train, split.y_train_z, split.scale_train)
-    val_ds = ANFISDataset(S_val, split.y_val_z, split.scale_val)
+    scaler = FeatureScaler().fit(split.X_train_raw)
+    X_train = scaler.transform(split.X_train_raw)
+    X_val = scaler.transform(split.X_val_raw)
+
+    train_ds = GRUDataset(X_train, split.y_train_z, split.scale_train)
+    val_ds = GRUDataset(X_val, split.y_val_z, split.scale_val)
 
     best_cfg = candidates[0]
     best_epoch = 1
@@ -245,14 +226,14 @@ def tune_anfis_config(
 
     for cfg in candidates:
         set_seed(seed)
-        model = _make_model(input_dim=S_train.shape[-1], cfg=cfg)
-        _, metrics, best_epoch_here = train_anfis_with_early_stopping(
+        model = _make_model(input_dim=X_train.shape[-1], cfg=cfg)
+        _, metrics, best_epoch_here = train_lstm_with_early_stopping(
             model,
             train_ds,
             val_ds,
             val_current_ohlc=split.current_ohlc_val,
             val_next_ohlc=split.next_ohlc_val,
-            anfis_cfg=cfg,
+            lstm_cfg=cfg,
             train_cfg=train_cfg,
         )
         if float(metrics["selection_score"]) < float(best_metrics["selection_score"]) - 1e-5:
@@ -263,9 +244,9 @@ def tune_anfis_config(
     return best_cfg, best_epoch, best_metrics
 
 
-def fit_and_eval_anfis(
+def fit_and_eval_lstm(
     split: SplitArrays,
-    anfis_cfg: ANFISConfig,
+    lstm_cfg: LSTMConfig,
     train_cfg: TrainConfig,
     seed: int,
     epochs: int | None = None,
@@ -287,16 +268,13 @@ def fit_and_eval_anfis(
     X_train = scaler.transform(X_train_raw)
     X_test = scaler.transform(split.X_test_raw)
 
-    S_train = summarize_windows(X_train)
-    S_test = summarize_windows(X_test)
-
-    train_ds = ANFISDataset(S_train, y_train_z, scale_train)
-    test_ds = ANFISDataset(S_test, split.y_test_z, split.scale_test)
+    train_ds = GRUDataset(X_train, y_train_z, scale_train)
+    test_ds = GRUDataset(X_test, split.y_test_z, split.scale_test)
 
     set_seed(seed)
-    model = _make_model(input_dim=S_train.shape[-1], cfg=anfis_cfg)
-    model = fit_anfis_fixed_epochs(model, train_ds, anfis_cfg, train_cfg, epochs=epochs or train_cfg.max_epochs)
-    return evaluate_anfis(
+    model = _make_model(input_dim=X_train.shape[-1], cfg=lstm_cfg)
+    model = fit_lstm_fixed_epochs(model, train_ds, lstm_cfg, train_cfg, epochs=epochs or train_cfg.max_epochs)
+    return evaluate_lstm(
         model,
         test_ds,
         current_ohlc=split.current_ohlc_test,
@@ -305,13 +283,13 @@ def fit_and_eval_anfis(
     )
 
 
-def fit_final_anfis(
+def fit_final_lstm(
     split: SplitArrays,
-    anfis_cfg: ANFISConfig,
+    lstm_cfg: LSTMConfig,
     train_cfg: TrainConfig,
     seed: int,
     epochs: int | None = None,
-) -> Tuple[ANFISMultiOutputRegressor, FeatureScaler, Dict[str, object]]:
+) -> Tuple[LSTMMultiOutputRegressor, FeatureScaler, Dict[str, object]]:
     train_blocks = [split.X_train_raw]
     y_blocks = [split.y_train_z]
     scale_blocks = [split.scale_train]
@@ -329,16 +307,13 @@ def fit_final_anfis(
     X_train = scaler.transform(X_train_raw)
     X_test = scaler.transform(split.X_test_raw)
 
-    S_train = summarize_windows(X_train)
-    S_test = summarize_windows(X_test)
-
-    train_ds = ANFISDataset(S_train, y_train_z, scale_train)
-    test_ds = ANFISDataset(S_test, split.y_test_z, split.scale_test)
+    train_ds = GRUDataset(X_train, y_train_z, scale_train)
+    test_ds = GRUDataset(X_test, split.y_test_z, split.scale_test)
 
     set_seed(seed)
-    model = _make_model(input_dim=S_train.shape[-1], cfg=anfis_cfg)
-    model = fit_anfis_fixed_epochs(model, train_ds, anfis_cfg, train_cfg, epochs=epochs or train_cfg.max_epochs)
-    test_metrics = evaluate_anfis(
+    model = _make_model(input_dim=X_train.shape[-1], cfg=lstm_cfg)
+    model = fit_lstm_fixed_epochs(model, train_ds, lstm_cfg, train_cfg, epochs=epochs or train_cfg.max_epochs)
+    test_metrics = evaluate_lstm(
         model,
         test_ds,
         current_ohlc=split.current_ohlc_test,
@@ -348,21 +323,21 @@ def fit_final_anfis(
     return model, scaler, test_metrics
 
 
-def select_anfis_config(
+def select_lstm_config(
     split: SplitArrays,
     train_cfg: TrainConfig,
     tuning_seed: int,
     fast: bool = False,
-    fixed_anfis_cfg: ANFISConfig | None = None,
-) -> Tuple[ANFISConfig, int, Dict[str, object] | None]:
+    fixed_lstm_cfg: LSTMConfig | None = None,
+) -> Tuple[LSTMConfig, int, Dict[str, object] | None]:
     if split.has_val:
-        if fixed_anfis_cfg is not None:
-            return fixed_anfis_cfg, train_cfg.max_epochs, None
+        if fixed_lstm_cfg is not None:
+            return fixed_lstm_cfg, train_cfg.max_epochs, None
 
-        candidates = default_anfis_candidates()
+        candidates = default_lstm_candidates()
         if fast:
             candidates = candidates[:2]
-        selected_cfg, selected_epoch, val_metrics = tune_anfis_config(
+        selected_cfg, selected_epoch, val_metrics = tune_lstm_config(
             split=split,
             train_cfg=train_cfg,
             candidates=candidates,
@@ -370,39 +345,12 @@ def select_anfis_config(
         )
         return selected_cfg, selected_epoch, val_metrics
 
-    if fixed_anfis_cfg is None:
+    if fixed_lstm_cfg is None:
         raise ValueError(
             "Split 7/3 has no validation set. To keep the protocol leak-free, "
-            "you must pass an explicit fixed ANFIS config."
+            "you must pass an explicit fixed LSTM config."
         )
-    return fixed_anfis_cfg, train_cfg.max_epochs, None
-
-
-def metrics_bundle_to_rows(
-    dataset_name: str,
-    seed: int,
-    split_ratio: str,
-    metrics_bundle: Dict[str, object],
-) -> List[Dict[str, float | int | str]]:
-    rows: List[Dict[str, float | int | str]] = []
-    by_target = metrics_bundle["by_target"]
-    for target_key in TARGET_KEYS:
-        metrics = by_target[target_key]
-        rows.append(
-            {
-                "dataset": dataset_name,
-                "seed": int(seed),
-                "model": "anfis_only",
-                "split_ratio": split_ratio,
-                "target": target_key,
-                "rmse": float(metrics["rmse"]),
-                "mape": float(metrics["mape"]),
-                "mae": float(metrics["mae"]),
-                "r2": float(metrics["r2"]),
-                "sign_acc": float(metrics["sign_acc"]),
-            }
-        )
-    return rows
+    return fixed_lstm_cfg, train_cfg.max_epochs, None
 
 
 def benchmark_single_dataset(
@@ -413,25 +361,25 @@ def benchmark_single_dataset(
     eval_seeds: Iterable[int],
     tuning_seed: int,
     fast: bool = False,
-    fixed_anfis_cfg: ANFISConfig | None = None,
+    fixed_lstm_cfg: LSTMConfig | None = None,
 ) -> Dict[str, object]:
     asset = load_asset_dataset(path=path, name=dataset_name, split_cfg=split_cfg)
     split = gather_split_arrays(asset, split_cfg)
 
-    selected_cfg, selected_epoch, val_metrics = select_anfis_config(
+    selected_cfg, selected_epoch, val_metrics = select_lstm_config(
         split=split,
         train_cfg=train_cfg,
         tuning_seed=tuning_seed,
         fast=fast,
-        fixed_anfis_cfg=fixed_anfis_cfg,
+        fixed_lstm_cfg=fixed_lstm_cfg,
     )
 
     rows: List[Dict[str, float | int | str]] = []
     metrics_by_seed: Dict[str, Dict[str, object]] = {}
     for seed in eval_seeds:
-        metrics = fit_and_eval_anfis(
+        metrics = fit_and_eval_lstm(
             split=split,
-            anfis_cfg=selected_cfg,
+            lstm_cfg=selected_cfg,
             train_cfg=train_cfg,
             seed=int(seed),
             epochs=selected_epoch,
@@ -445,6 +393,9 @@ def benchmark_single_dataset(
                 metrics_bundle=metrics,
             )
         )
+
+    for row in rows:
+        row["model"] = "lstm_only"
 
     return {
         "dataset": dataset_name,
@@ -464,32 +415,32 @@ def save_training_artifacts(
     dataset_name: str,
     split_cfg: RatioSplitConfig,
     train_cfg: TrainConfig,
-    anfis_cfg: ANFISConfig,
+    lstm_cfg: LSTMConfig,
     selected_epoch: int,
     sample_counts: Dict[str, int],
     val_metrics: Dict[str, object] | None,
     test_metrics: Dict[str, object],
     scaler: FeatureScaler,
-    model: ANFISMultiOutputRegressor,
+    model: LSTMMultiOutputRegressor,
 ) -> None:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    torch.save(model.state_dict(), output_path / "anfis_state_dict.pt")
-    np.savez(output_path / "anfis_scaler.npz", mean=scaler.scaler.mean_, scale=scaler.scaler.scale_)
+    torch.save(model.state_dict(), output_path / "lstm_state_dict.pt")
+    np.savez(output_path / "lstm_scaler.npz", mean=scaler.scaler.mean_, scale=scaler.scaler.scale_)
 
     payload = {
         "dataset": dataset_name,
-        "model": "anfis_only",
+        "model": "lstm_only",
         "target_definition": "model predicts next-day log-return for Open, High, Low, Close",
         "evaluation_definition": "benchmark/train metrics are computed on algebraically reconstructed next-day OHLC prices",
         "target_order": TARGET_KEYS,
         "split_config": asdict(split_cfg),
         "train_config": asdict(train_cfg),
-        "selected_config": asdict(anfis_cfg),
+        "selected_config": asdict(lstm_cfg),
         "selected_epoch": int(selected_epoch),
         "sample_counts": sample_counts,
         "val_metrics": val_metrics,
         "test_metrics": test_metrics,
     }
-    save_json(output_path / "anfis_training_summary.json", payload)
+    save_json(output_path / "lstm_training_summary.json", payload)

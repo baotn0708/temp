@@ -9,7 +9,7 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 
-from run_feature_group_anfis_clean import (
+from .run_feature_group_anfis_clean import (
     PRICE_NAMES,
     PreparedData,
     analyze_sample,
